@@ -150,7 +150,7 @@ def get_content(content_id: str):
     # Redirige links a proxy
     for _, item in (data.get("data", {}).get("children") or {}).items():
         item["link_original"] = item.get("link")
-        item["link"] = f"http://localhost:5000/proxy?content_id={item['id']}"
+        item["link"] = f"http://40.233.25.130:8000/proxy?content_id={item['id']}"
     return data
 
 import os
