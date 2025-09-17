@@ -106,7 +106,7 @@ async function login() {
   if(!username || !password) return;
 
   try {
-    const res = await fetch("http://ruben.local:5000/login", {
+    const res = await fetch("http://40.233.25.130:8000/login", {
       method:"POST",
       headers: {"Content-Type":"application/json"},
       body: JSON.stringify({username,password})
@@ -131,7 +131,7 @@ async function showFolder(folderId) {
   currentFolderId = folderId;
   currentPage = 0;
   try {
-    const res = await authFetch(`http://ruben.local:5000/get_content?content_id=${encodeURIComponent(folderId)}`);
+    const res = await authFetch(`http://40.233.25.130:8000/get_content?content_id=${encodeURIComponent(folderId)}`);
     if(res.status===401){ showLogin(); return; }
     let data = await res.json();
     console.log(data);
@@ -220,7 +220,7 @@ async function registerFolder() {
   const content_id = document.getElementById("folderId").value.trim();
   if (!name || !content_id) return alert("Rellena ambos campos");
 
-  const res = await authFetch("http://ruben.local:5000/folders", {
+  const res = await authFetch("http://40.233.25.130:8000/folders", {
     method: "POST",
     headers: {"Content-Type": "application/json"},
     body: JSON.stringify({name, content_id})
@@ -232,7 +232,7 @@ async function registerFolder() {
 }
 
 async function loadFolders() {
-  const res = await authFetch("http://ruben.local:5000/folders");
+  const res = await authFetch("http://40.233.25.130:8000/folders");
   if(res.status===401){ showLogin(); return; }
   const folders = await res.json();
   const ul = document.getElementById("foldersList");
