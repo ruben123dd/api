@@ -4,10 +4,29 @@
 <meta charset="UTF-8">
 <title>Gestor de Folders</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Martian+Mono:wght@500&display=swap" rel="stylesheet">
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 
   <link rel="stylesheet" href="modal.css">
+  <style>
+  body { font-family: 'Martian Mono', monospace; }
+  /* Explorer styles */
+  .folder-row { padding:10px; border-radius:8px; background: rgba(255,255,255,0.03); margin-bottom:8px; }
+  .folder-row:hover { background: rgba(255,255,255,0.05); }
+  .preview-thumb { width:80px; height:60px; object-fit:cover; border-radius:6px; margin-right:10px; background:#111; }
+  .item-meta { font-size:12px; color:#ddd; }
+  .folder-list-flex { display:flex; align-items:center; gap:12px; }
+  /* Register form styles */
+  #folderName, #folderId { max-width: 320px; }
+  #foldersList .list-group-item { display:flex; justify-content:space-between; align-items:center; gap:12px; }
+  #foldersList .list-group-item .folder-link { font-weight:600; color:#0d6efd; text-decoration:none; }
+  #foldersList .list-group-item .folder-meta { font-size:12px; color:#999; }
+  /* Smaller preview for registered list */
+  #foldersList .preview-thumb { width:48px; height:36px; border-radius:4px; }
+  </style>
 </head>
 <body class="p-3">
 
@@ -83,9 +102,76 @@ let currentPage = 0;
 const itemsPerPage = 5;
 let currentItems = [];
 
+// Blob pool to cache object URLs and avoid re-downloading images
+// Preallocated array with length itemsPerPage. Each slot: { ownerId, contentId, url }
+let blobPool = [];
+
+function initBlobPool(ownerId){
+  // ownerId: folder id or file id that these blobs belong to
+  if(!Array.isArray(blobPool) || blobPool.length !== itemsPerPage){
+    blobPool = new Array(itemsPerPage).fill(null).map(()=>({ ownerId: null, contentId: null, url: null }));
+  }
+  // assign owner to all empty slots
+  blobPool.forEach(s => { if(!s.ownerId) s.ownerId = ownerId; });
+}
+
+function clearBlobPool(){
+  blobPool.forEach(s=>{ if(s && s.url){ try{ URL.revokeObjectURL(s.url); }catch(e){} s.url = null; s.contentId = null; s.ownerId = null; } });
+}
+
+async function ensureBlobForSlot(slotIndex, content){
+  // content: { id, link }
+  const slot = blobPool[slotIndex];
+  if(!slot) return null;
+  // if owner changed, clear slot
+  if(slot.ownerId !== (currentFolderId || content.id)){
+    if(slot.url) { try{ URL.revokeObjectURL(slot.url); }catch(e){} }
+    slot.url = null; slot.contentId = null; slot.ownerId = currentFolderId || content.id;
+  }
+    // if slot already has this content, return  
+  if(slot.contentId === content.id && slot.url) return slot.url;
+  // otherwise fetch the blob and set
+  try{
+      const fetchUrl = addProxySizeParams(content.link);
+      const res = await authFetch(fetchUrl);
+    if(!res.ok) throw new Error('fetch failed');
+    const blob = await res.blob();
+    if(slot.url) { try{ URL.revokeObjectURL(slot.url); }catch(e){} }
+    slot.url = URL.createObjectURL(blob);
+    slot.contentId = content.id;
+    return slot.url;
+  }catch(e){ console.error('blob fetch error', e); return null; }
+}
+
+// If a URL is a proxy image request (/proxy?content_id=...), add max_width and max_height based on screen size
+function addProxySizeParams(url){
+  if(!url || typeof url !== 'string') return url;
+  try{
+    if(url.includes('/proxy?content_id=') || /proxy\?content_id=/i.test(url)){
+      const u = new URL(url, window.location.origin);
+      u.searchParams.set('max_width', String(window.innerWidth || screen.width || 0));
+      u.searchParams.set('max_height', String(window.innerHeight || screen.height || 0));
+      return u.toString();
+    }
+  }catch(e){
+    // fallback: append manually if it contains proxy?content_id=
+    if(/proxy\?content_id=/i.test(url)){
+      return url + (url.includes('?') ? '&' : '?') + 'max_width=' + (window.innerWidth||screen.width||0) + '&max_height=' + (window.innerHeight||screen.height||0);
+    }
+  }
+  return url;
+}
+
 // Modal
 let modalItems = [];
 let modalIndex = 0;
+// placeholder: small SVG data URL
+const MM_PLACEHOLDER = 'data:image/svg+xml;utf8,' + encodeURIComponent(`
+  <svg xmlns="http://www.w3.org/2000/svg" width="240" height="160">
+    <rect width="100%" height="100%" fill="#111"/>
+    <text x="50%" y="50%" fill="#666" font-size="20" font-family="sans-serif" text-anchor="middle" alignment-baseline="central">No preview</text>
+  </svg>
+`);
 
 // ---------------------- Autenticación ----------------------
 function showLogin() {
@@ -130,6 +216,7 @@ async function authFetch(url, options={}) {
 async function showFolder(folderId) {
   currentFolderId = folderId;
   currentPage = 0;
+  initBlobPool(folderId);
   try {
     const res = await authFetch(`http://40.233.25.130:8000/get_content?content_id=${encodeURIComponent(folderId)}`);
     if(res.status===401){ showLogin(); return; }
@@ -169,18 +256,57 @@ function renderPage() {
 
   pageItems.forEach((item, index) => {
     const div = document.createElement("div");
-    div.className = "d-flex justify-content-between align-items-center";
+    div.className = "folder-row d-flex justify-content-between align-items-center";
 
-    if (item.type === "folder") {
-      div.innerHTML = `📁 <a href="#" onclick="showFolder('${item.id}')">${item.name}</a>
-                       <span class="badge bg-secondary">${item.childrenCount} items</span>`;
-    } else if (item.type === "file") {
-      let typeEmoji = item.mimetype.startsWith("image/") ? "🖼️" : 
-                      item.mimetype.startsWith("video/") ? "🎬" : "📄";
-      div.innerHTML = `${typeEmoji} <a href="#" onclick="openModalFolder(${index})">${item.name}</a>
-                       <span class="text-muted">${(item.size/1024/1024).toFixed(2)} MB</span>`;
+    const left = document.createElement('div');
+    left.className = 'folder-list-flex';
+
+    if (item.type === 'folder') {
+      const preview = document.createElement('img');
+      preview.className = 'preview-thumb';
+      preview.alt = 'preview';
+      preview.src = MM_PLACEHOLDER;
+      // if folder provides a thumbnail property, use it; otherwise try first child's thumbnail
+      if(item.thumbnail) preview.src = item.thumbnail;
+      else (async ()=>{
+        try{
+          const res = await authFetch(`http://40.233.25.130:8000/get_content?content_id=${encodeURIComponent(item.id)}`);
+          if(!res.ok) return;
+          const d = await res.json();
+          const children = Object.values(d.data.children || {});
+          // prefer child's thumbnail, then child's link if child is image
+          const child = children.find(c=>c.thumbnail || (c.mimetype && c.mimetype.startsWith('image')));
+          if(child){
+            // try to use blob pool slot for this page index
+            const slotIndex = index % itemsPerPage;
+            const url = await ensureBlobForSlot(slotIndex, { id: child.id, link: child.thumbnail || child.link });
+            preview.src = url || child.thumbnail || child.link || MM_PLACEHOLDER;
+          }
+        }catch(e){ /* ignore preview errors */ }
+      })();
+
+      const title = document.createElement('div');
+      title.innerHTML = `📁 <a href="#" onclick="showFolder('${item.id}')">${item.name}</a><div class="item-meta">${item.childrenCount || 0} items</div>`;
+      left.appendChild(preview);
+      left.appendChild(title);
+    } else if (item.type === 'file') {
+      const preview = document.createElement('img');
+      preview.className = 'preview-thumb';
+      preview.alt = 'file';
+      // try to use blob pool for file preview
+      (async ()=>{
+        const slotIndex = index % itemsPerPage;
+        const url = await ensureBlobForSlot(slotIndex, { id: item.id, link: item.thumbnail || item.link });
+        preview.src = url || item.thumbnail || ((item.mimetype && item.mimetype.startsWith('image')) ? item.link : MM_PLACEHOLDER);
+      })();
+      const title = document.createElement('div');
+      const typeEmoji = item.mimetype && item.mimetype.startsWith('image') ? '🖼️' : (item.mimetype && item.mimetype.startsWith('video') ? '🎬' : '📄');
+      title.innerHTML = `${typeEmoji} <a href="#" onclick="openModalFolder(${index})">${item.name}</a><div class="item-meta">${(item.size/1024/1024).toFixed(2)} MB</div>`;
+      left.appendChild(preview);
+      left.appendChild(title);
     }
 
+    div.appendChild(left);
     container.appendChild(div);
   });
 }
@@ -201,7 +327,7 @@ function openModalFolder(itemOffset) {
   modalIndex = itemOffset || 0;
   const mmItems = files.map(f => ({
     title: f.name,
-    url: f.link,
+    url: addProxySizeParams(f.link),
     type: f.mimetype || (f.mimetype || 'image/jpeg'),
     size: f.size || 0,
     thumbnail: f.thumbnail || f.link
@@ -239,10 +365,50 @@ async function loadFolders() {
   ul.innerHTML = "";
   folders.forEach(f => {
     const li = document.createElement("li");
-    li.className = "list-group-item";
-    li.innerHTML = `<a href="#" onclick="showFolder('${f.content_id}')">${f.name}</a>`;
+    li.className = "list-group-item d-flex align-items-center";
+
+    const left = document.createElement('div');
+    left.className = 'd-flex align-items-center gap-2';
+
+    const thumb = document.createElement('img');
+    thumb.className = 'preview-thumb';
+    thumb.src = f.thumbnail || MM_PLACEHOLDER;
+    thumb.alt = f.name || 'folder';
+
+    const title = document.createElement('div');
+    title.innerHTML = `<a class="folder-link" href="#" onclick="onRegisteredFolderClick('${f.content_id}')">${f.name}</a><div class="folder-meta">${f.content_id}</div>`;
+
+    left.appendChild(thumb);
+    left.appendChild(title);
+
+    li.appendChild(left);
     ul.appendChild(li);
   });
+}
+
+// When a registered folder is clicked: if it points to a file, show that file directly; otherwise open folder
+async function onRegisteredFolderClick(contentId){
+  try{
+    const res = await authFetch(`http://40.233.25.130:8000/get_content?content_id=${encodeURIComponent(contentId)}`);
+    if(res.status===401){ showLogin(); return; }
+    const data = await res.json();
+    const d = data.data;
+    if(d.type === 'file'){
+      // show single file as the only item in the files section
+      currentItems = [d];
+      currentPage = 0;
+      renderPage();
+      // open the modal directly to show the file
+      // build mm item
+  const mmItem = { title: d.name, url: addProxySizeParams(d.link), type: d.mimetype, size: d.size||0, thumbnail: d.thumbnail||d.link };
+      // ensure auth header mapping for url
+      if(window.__MM_AUTH_HEADERS === undefined) window.__MM_AUTH_HEADERS = {};
+      if(token) window.__MM_AUTH_HEADERS[mmItem.url] = { Authorization: 'Bearer ' + token };
+      MM.openModalWithOptions([mmItem], { startIndex:0, carousel:'bottom', preload:1 });
+    } else {
+      showFolder(contentId);
+    }
+  }catch(e){ console.error('registered click error', e); showFolder(contentId); }
 }
 
 // ---------------------- Inicial ----------------------

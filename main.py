@@ -145,12 +145,13 @@ def get_content_sync(content_id, content_filter="", page=1, page_size=1000, sort
     return data
 
 @app.get("/get_content")
-def get_content(content_id: str):
-    data = get_content_sync(content_id)
+def get_content(content_id: str, page_size: int=1000):
+    data = get_content_sync(content_id, page_size=page_size)
     # Redirige links a proxy
     for _, item in (data.get("data", {}).get("children") or {}).items():
         item["link_original"] = item.get("link")
-        item["link"] = f"http://40.233.25.130:8000/proxy?content_id={item['id']}"
+        if not (item.get("type") == "folder"):
+            item["link"] = f"http://40.233.25.130:8000/proxy?content_id={item['id']}"
     return data
 
 import os

@@ -1,14 +1,16 @@
+
 const MM = (function(){
   let modal, viewer, carousel, items=[], current=0;
   let cache = new Map();
   let totalCacheBytes = 0;
-  let cacheLimitMB = 50; // default cache limit in MB
+  console.log(totalCacheBytes)
+  let cacheLimitMB = 500; // default cache limit in MB
   let preloadCount = 2; // default number of images to preload in each direction
   let _renderSeq = 0; // sequence counter to avoid race when rendering async
-  let basePreload = 2;
+  let basePreload = 10;
   let lastDirection = null; // 'next' or 'prev'
   let streakCount = 0;
-  const maxStreak = 5; // cap how many extra preload levels
+  const maxStreak = 1; // cap how many extra preload levels
   let streakTimer = null;
   const streakTimeoutMs = 1500; // reset streak after inactivity
   // spinner elements
@@ -27,6 +29,7 @@ const MM = (function(){
     if (cache.has(url)){
       const entry = cache.get(url);
       entry.lastUsed = Date.now();
+      console.log(totalCacheBytes)
       return entry.objURL;
     }
     // fetch and measure size if possible
