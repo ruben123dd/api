@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Gestor de Folders</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+
+  <link rel="stylesheet" href="modal.css">
+</head>
+<body class="p-3">
+
+<!-- Login -->
+<div id="loginForm">
+  <h3>Iniciar Sesión</h3>
+  <div class="mb-3">
+    <input type="text" id="loginUsername" class="form-control" placeholder="Usuario">
+  </div>
+  <div class="mb-3">
+    <input type="password" id="loginPassword" class="form-control" placeholder="Contraseña">
+  </div>
+  <button class="btn btn-primary" onclick="login()">Entrar</button>
+  <div id="loginError" class="text-danger mt-2"></div>
+</div>
+
+<!-- Dashboard -->
+<div id="dashboardApp" style="display:none;">
+<h3>Explorar Folder</h3>
+<div class="mb-3 d-flex gap-2">
+  <input type="text" id="folderInput" class="form-control" placeholder="Ingrese content ID">
+  <button class="btn btn-primary" onclick="changeFolder()">Abrir Folder</button>
+</div>
+
+<div id="folderContent" class="mb-3"></div>
+
+<div class="mb-3 d-flex gap-2">
+  <button class="btn btn-secondary" onclick="prevPage()">⬅️ Anterior</button>
+  <button class="btn btn-secondary" onclick="nextPage()">➡️ Siguiente</button>
+</div>
+
+<h3>Registrar Folder</h3>
+<div class="mb-3 d-flex gap-2">
+  <input type="text" id="folderName" class="form-control" placeholder="Nombre del folder">
+  <input type="text" id="folderId" class="form-control" placeholder="Content ID">
+  <button class="btn btn-success" onclick="registerFolder()">Registrar</button>
+</div>
+
+<h3>Folders Registrados</h3>
+<ul id="foldersList" class="list-group mb-5"></ul>
+
+</!-- Replaced modal: use the new MM modal markup -->
+<div id="mmModal" class="modal">
+  <div class="modal-content">
+    <div class="mm-topbar">
+      <div class="mm-info">
+        <div class="mm-title">Título del archivo</div>
+        <div class="mm-size">123 KB</div>
+      </div>
+      <div class="mm-buttons">
+        <button id="btnLock" aria-label="Bloquear">🔒</button>
+        <button id="btnFullscreen">⛶</button>
+        <button id="btnClose">✕</button>
+      </div>
+    </div>
+    <div class="mm-viewer" id="mmViewer">
+      <button class="mm-nav-btn prev" id="mmPrev" aria-label="Anterior"></button>
+      <button class="mm-nav-btn next" id="mmNext" aria-label="Siguiente"></button>
+      <div class="mm-spinner hidden" id="mmSpinner"><div class="dot"></div><div class="mm-spinner-text">Cargando...</div></div>
+    </div>
+    <div class="mm-carousel" id="mmCarousel"></div>
+  </div>
+</div>
+
+<script src="modal.js"></script>
+</div>
+
+<script>
+// ---------------------- Estado ----------------------
+let token = localStorage.getItem("jwtToken");
+let currentFolderId = "6b89c061-1617-48ba-9284-ba7fc1280dcd";
+let currentPage = 0;
+const itemsPerPage = 5;
+let currentItems = [];
+
+// Modal
+let modalItems = [];
+let modalIndex = 0;
+
+// ---------------------- Autenticación ----------------------
+function showLogin() {
+  document.getElementById("loginForm").style.display = "block";
+  document.getElementById("dashboardApp").style.display = "none";
+}
+
+function showDashboard() {
+  document.getElementById("loginForm").style.display = "none";
+  document.getElementById("dashboardApp").style.display = "block";
+  showFolder(currentFolderId);
+  loadFolders();
+}
+
+async function login() {
+  const username = document.getElementById("loginUsername").value.trim();
+  const password = document.getElementById("loginPassword").value.trim();
+  if(!username || !password) return;
+
+  try {
+    const res = await fetch("http://ruben.local:5000/login", {
+      method:"POST",
+      headers: {"Content-Type":"application/json"},
+      body: JSON.stringify({username,password})
+    });
+    const data = await res.json();
+    if(!res.ok) { document.getElementById("loginError").innerText = data.detail || "Error"; return; }
+    token = data.token;
+    localStorage.setItem("jwtToken", token);
+    showDashboard();
+  } catch(e){ console.error(e); }
+}
+
+// ---------------------- Fetch helpers ----------------------
+async function authFetch(url, options={}) {
+  options.headers = options.headers || {};
+  if(token) options.headers["Authorization"] = "Bearer " + token;
+  return fetch(url, options);
+}
+
+// ---------------------- Folder ----------------------
+async function showFolder(folderId) {
+  currentFolderId = folderId;
+  currentPage = 0;
+  try {
+    const res = await authFetch(`http://ruben.local:5000/get_content?content_id=${encodeURIComponent(folderId)}`);
+    if(res.status===401){ showLogin(); return; }
+    let data = await res.json();
+    console.log(data);
+    // Guardamos el parentFolder si existe
+    currentParentFolder = data.data.parentFolder || null;
+    console.log("Parent Folder:", currentParentFolder);
+    data = data.data;
+    if (data.type === "folder" && data.children) {
+      currentItems = Object.values(data.children);
+      renderPage();
+    } else {
+      currentItems = [];
+      document.getElementById("folderContent").innerHTML =
+        `<div class="text-danger">No se pudo acceder a este folder o está vacío.</div>`;
+    }
+  } catch (err) { console.error(err); }
+}
+
+function renderPage() {
+  const container = document.getElementById("folderContent");
+  container.innerHTML = "";
+
+  // Botón para ir al folder padre
+  if(currentParentFolder){
+    const parentBtn = document.createElement("button");
+    parentBtn.className = "btn btn-warning mb-2";
+    parentBtn.innerText = "<-- Folder Padre";
+    parentBtn.onclick = () => showFolder(currentParentFolder);
+    container.appendChild(parentBtn);
+  }
+
+  const start = currentPage * itemsPerPage;
+  const end = start + itemsPerPage;
+  const pageItems = currentItems.slice(start, end);
+
+  pageItems.forEach((item, index) => {
+    const div = document.createElement("div");
+    div.className = "d-flex justify-content-between align-items-center";
+
+    if (item.type === "folder") {
+      div.innerHTML = `📁 <a href="#" onclick="showFolder('${item.id}')">${item.name}</a>
+                       <span class="badge bg-secondary">${item.childrenCount} items</span>`;
+    } else if (item.type === "file") {
+      let typeEmoji = item.mimetype.startsWith("image/") ? "🖼️" : 
+                      item.mimetype.startsWith("video/") ? "🎬" : "📄";
+      div.innerHTML = `${typeEmoji} <a href="#" onclick="openModalFolder(${index})">${item.name}</a>
+                       <span class="text-muted">${(item.size/1024/1024).toFixed(2)} MB</span>`;
+    }
+
+    container.appendChild(div);
+  });
+}
+
+function nextPage() { if ((currentPage + 1) * itemsPerPage < currentItems.length) { currentPage++; renderPage(); } }
+function prevPage() { if (currentPage > 0) { currentPage--; renderPage(); } }
+function changeFolder() {
+  const inputId = document.getElementById("folderInput").value.trim();
+  if (inputId) showFolder(inputId);
+}
+
+// ---------------------- Modal integration with MM ----------------------
+function openModalFolder(itemOffset) {
+  // build array of files from currentItems and transform to MM expected shape
+  const files = currentItems.filter(i => i.type === 'file');
+  if (!files.length) return;
+  modalItems = files;
+  modalIndex = itemOffset || 0;
+  const mmItems = files.map(f => ({
+    title: f.name,
+    url: f.link,
+    type: f.mimetype || (f.mimetype || 'image/jpeg'),
+    size: f.size || 0,
+    thumbnail: f.thumbnail || f.link
+  }));
+  // open the modal using the shared MM module
+  try{
+    MM.openModalWithOptions(mmItems, { startIndex: modalIndex, carousel: 'bottom', preload: 2 });
+  }catch(err){
+    console.error('MM open error', err);
+  }
+}
+
+// ---------------------- Folders Registrados ----------------------
+async function registerFolder() {
+  const name = document.getElementById("folderName").value.trim();
+  const content_id = document.getElementById("folderId").value.trim();
+  if (!name || !content_id) return alert("Rellena ambos campos");
+
+  const res = await authFetch("http://ruben.local:5000/folders", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({name, content_id})
+  });
+  const data = await res.json();
+  if(!res.ok) { alert(data.detail || "Error"); return; }
+  alert(data.message);
+  loadFolders();
+}
+
+async function loadFolders() {
+  const res = await authFetch("http://ruben.local:5000/folders");
+  if(res.status===401){ showLogin(); return; }
+  const folders = await res.json();
+  const ul = document.getElementById("foldersList");
+  ul.innerHTML = "";
+  folders.forEach(f => {
+    const li = document.createElement("li");
+    li.className = "list-group-item";
+    li.innerHTML = `<a href="#" onclick="showFolder('${f.content_id}')">${f.name}</a>`;
+    ul.appendChild(li);
+  });
+}
+
+// ---------------------- Inicial ----------------------
+if(token) { showDashboard(); } else { showLogin(); }
+</script>
+
+</body>
+</html>

@@ -1,0 +1,206 @@
+:root {
+  --mm-bg: #000;
+  --mm-fg: rgba(0,0,0,0);
+  --mm-accent: #0af;
+  --mm-fade-time: 3s;
+  --carousel-height: 100px;
+}
+
+body { background:#222; color:#fff; font-family:sans-serif; }
+
+.modal {
+  position:fixed;
+  top:0; left:0; right:0; bottom:0;
+  background:rgba(0,0,0,0.9);
+  display:none;
+  justify-content:center;
+  align-items:center;
+  z-index:1000;
+}
+
+.modal.active { display:flex; }
+
+.modal-content {
+  position: relative;
+  background: #111;
+  width: 100%;
+  height: 100%;
+  border-radius: 10px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.mm-topbar {
+  position:absolute;
+  top:12px; left:12px; right:12px;
+  display:flex;
+  justify-content:space-between;
+  align-items:flex-start;
+  z-index:10;
+}
+.mm-topbar .mm-info {
+  display:flex;
+  flex-direction:column;
+  align-items:flex-start;
+  color:#fff;
+  font-size:14px;
+}
+.mm-topbar .mm-info .mm-title {
+  font-weight:bold;
+  font-size:16px;
+}
+.mm-topbar button {
+  background:rgba(0,0,0,0.6);
+  color:#fff;
+  border:none;
+  padding:6px 10px;
+  border-radius:6px;
+  cursor:pointer;
+  font-size:18px;
+  margin-left:6px;
+}
+
+/* locked state */
+.modal.locked .mm-topbar,
+.modal.locked .mm-carousel,
+.modal.locked .mm-buttons {
+  opacity:0;
+  pointer-events:none;
+  transition: opacity 200ms ease-in-out;
+}
+.modal.locked * { pointer-events: none !important; }
+.modal.locked .mm-nav-btn, .modal.locked #btnLock { pointer-events: auto !important; }
+.modal.locked #btnLock {
+  opacity:0.85;
+  pointer-events:auto;
+  position:fixed;
+  right:16px;
+  top:12px;
+  z-index:3000;
+}
+.modal.locked .mm-nav-btn { pointer-events:auto; }
+
+/* carousel side */
+.mm-carousel.left, .mm-carousel.right{
+  position:absolute;
+  top:0;
+  bottom:0;
+  width:140px;
+  height:auto;
+  display:flex;
+  flex-direction:column;
+  background:rgba(0,0,0,0.6);
+  overflow-y:auto;
+  z-index:5;
+}
+.mm-carousel.left { left:0; }
+.mm-carousel.right { right:0; }
+.modal.with-side-carousel .mm-viewer { margin-left:140px; margin-right:140px; }
+
+/* images */
+.mm-viewer img {
+  position:absolute;
+  left:50%;
+  top:50%;
+  transform:translate(-50%, -50%);
+  z-index:1000;
+  width:auto;
+  height:auto;
+  max-width: calc(100vw - 8px);
+  max-height: calc(100vh - 8px);
+  object-fit: contain;
+  pointer-events: none;
+}
+.modal.with-side-carousel .mm-viewer img {
+  max-width: calc(100vw - 140px - 40px);
+  max-height: calc(100vh - 40px);
+}
+
+.mm-viewer {
+  position:absolute;
+  width:100vw;
+  height:100vh;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  overflow:visible;
+  z-index:1;
+}
+.mm-nav-btn {
+  position:absolute;
+  top:0;
+  bottom:0;
+  width:25%;
+  background:transparent;
+  border:none;
+  cursor:pointer;
+  z-index:1200;
+  opacity:0;
+  outline: none;
+}
+.mm-nav-btn:hover { opacity:0.06; }
+.mm-nav-btn.prev { left:0; }
+.mm-nav-btn.next { right:0; }
+.mm-viewer video {
+  max-width:100%;
+  max-height:100%;
+}
+
+.mm-carousel {
+  position:absolute;
+  bottom:0; left:0; right:0;
+  height:var(--carousel-height);
+  background:rgba(0,0,0,0.7);
+  display:flex;
+  align-items:center;
+  overflow-x:auto;
+  scrollbar-width:none;
+  z-index:5;
+  opacity: 0.7;
+}
+.mm-carousel::-webkit-scrollbar{ display:none; }
+.mm-thumb {
+  flex:0 0 auto;
+  margin:0 5px;
+  border:2px solid transparent;
+  cursor:pointer;
+}
+.mm-thumb img { height:80px; border-radius:6px; }
+.mm-thumb.active { border-color:var(--mm-accent); }
+
+/* spinner */
+.mm-spinner {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0,0,0,0.5);
+  padding: 18px 22px;
+  border-radius: 12px;
+  gap: 12px;
+  color: #fff;
+  font-size: 14px;
+  z-index: 4000;
+  backdrop-filter: blur(4px);
+  box-shadow: 0 6px 18px rgba(0,0,0,0.6);
+  pointer-events: none;
+}
+.mm-spinner.hidden { display: none; }
+.mm-spinner .dot {
+  width:18px; height:18px; border-radius:50%;
+  background:linear-gradient(90deg,var(--mm-accent) 0%, #6fb3ff 100%);
+  animation: pulse 1s infinite ease-in-out;
+}
+@keyframes pulse {
+  0% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.4); opacity: 0.8; }
+  100% { transform: scale(1); opacity: 1; }
+}

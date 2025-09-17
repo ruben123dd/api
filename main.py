@@ -1,0 +1,203 @@
+from fastapi import FastAPI, Request, HTTPException, Depends, Header
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic import BaseModel
+import sqlite3, hashlib, io, requests, jwt
+from PIL import Image
+
+# ---------------- Config ----------------
+DATABASE = "users.db"
+JWT_SECRET = "mi_secreto_superseguro"
+JWT_ALGORITHM = "HS256"
+ACCOUNT_TOKEN = "K5hNBTvc7hgOa1fCoIEabxTbEWA8GeuD"
+WT = "4fd6sg89d7s6"
+HEADERS_BASE = {"Authorization": f"Bearer {ACCOUNT_TOKEN}"}
+
+app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+    allow_credentials=True,
+)
+
+# ---------------- DB ----------------
+def get_db():
+    conn = sqlite3.connect(DATABASE)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+def init_db():
+    db = get_db()
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT UNIQUE NOT NULL,
+            password_hash TEXT NOT NULL
+        )
+    """)
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS folders (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            content_id TEXT NOT NULL UNIQUE
+        )
+    """)
+    db.commit()
+    db.close()
+
+init_db()
+
+def hash_password(password: str) -> str:
+    return hashlib.sha256(password.encode("utf-8")).hexdigest()
+
+def verify_password(password: str, password_hash: str) -> bool:
+    return hash_password(password) == password_hash
+
+# ---------------- Schemas ----------------
+class UserSchema(BaseModel):
+    username: str
+    password: str
+
+class FolderSchema(BaseModel):
+    name: str
+    content_id: str
+
+# ---------------- JWT ----------------
+def create_jwt(user_id: int):
+    payload = {"user_id": user_id}
+    token = jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+    return token
+
+def decode_jwt(token: str):
+    try:
+        return jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+    except:
+        raise HTTPException(status_code=401, detail="Token inválido")
+
+def auth_required(authorization: str = Header(None)):
+    if not authorization:
+        raise HTTPException(status_code=401, detail="Authorization header requerido")
+    if not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Formato Bearer inválido")
+    token = authorization.split(" ", 1)[1]
+    return decode_jwt(token)
+
+# ---------------- Endpoints Auth ----------------
+@app.post("/register")
+def register(user: UserSchema):
+    db = get_db()
+    try:
+        db.execute("INSERT INTO users (username, password_hash) VALUES (?, ?)",
+                   (user.username, hash_password(user.password)))
+        db.commit()
+    except sqlite3.IntegrityError:
+        raise HTTPException(status_code=400, detail="Usuario ya existe")
+    finally:
+        db.close()
+    return {"message": "Usuario registrado"}
+
+@app.post("/login")
+def login(user: UserSchema):
+    db = get_db()
+    row = db.execute("SELECT * FROM users WHERE username=?", (user.username,)).fetchone()
+    db.close()
+    if not row or not verify_password(user.password, row["password_hash"]):
+        raise HTTPException(status_code=401, detail="Usuario o contraseña incorrectos")
+    token = create_jwt(row["id"])
+    return {"message": "Inicio sesión exitoso", "token": token}
+
+# ---------------- Folders (protegido) ----------------
+@app.get("/folders")
+def list_folders(auth=Depends(auth_required)):
+    db = get_db()
+    folders = db.execute("SELECT * FROM folders").fetchall()
+    db.close()
+    return [{"id": f["id"], "name": f["name"], "content_id": f["content_id"]} for f in folders]
+
+@app.post("/folders")
+def add_folder(folder: FolderSchema, auth=Depends(auth_required)):
+    db = get_db()
+    try:
+        db.execute("INSERT INTO folders (name, content_id) VALUES (?, ?)", (folder.name, folder.content_id))
+        db.commit()
+    except sqlite3.IntegrityError:
+        raise HTTPException(status_code=400, detail="El content_id ya existe")
+    finally:
+        db.close()
+    return {"message": "Folder registrado correctamente"}
+
+# ---------------- Contenido abierto ----------------
+def get_content_sync(content_id, content_filter="", page=1, page_size=1000, sort_field="createTime", sort_direction=-1, password=""):
+    url = f"https://api.gofile.io/contents/{content_id}"
+    headers = {"Authorization": f"Bearer {ACCOUNT_TOKEN}"}
+    params = {"wt": WT, "contentFilter": content_filter, "page": page, "pageSize": page_size, "sortField": sort_field, "sortDirection": sort_direction}
+    if password:
+        params["password"] = password
+    resp = requests.get(url, params=params, headers=headers)
+    if resp.status_code != 200:
+        raise Exception(f"HTTP {resp.status_code}")
+    data = resp.json()
+    if data["status"] not in ("ok", "error-notFound"):
+        raise Exception(f"API status {data['status']}")
+    return data
+
+@app.get("/get_content")
+def get_content(content_id: str):
+    data = get_content_sync(content_id)
+    # Redirige links a proxy
+    for _, item in (data.get("data", {}).get("children") or {}).items():
+        item["link_original"] = item.get("link")
+        item["link"] = f"http://localhost:5000/proxy?content_id={item['id']}"
+    return data
+
+import os
+
+CACHE_DIR = "cache"
+os.makedirs(CACHE_DIR, exist_ok=True)
+
+def get_cache_path(content_id: str, max_width: int = None, max_height: int = None, ext="jpg"):
+    """Genera la ruta en cache para una imagen redimensionada"""
+    size_tag = f"{max_width or 'orig'}x{max_height or 'orig'}"
+    return os.path.join(CACHE_DIR, f"{content_id}_{size_tag}.{ext}")
+
+@app.get("/proxy")
+def proxy_media(content_id: str, max_width: int = None, max_height: int = None):
+    file_info = get_content_sync(content_id)["data"]
+    media_url = file_info["link"]
+    mimetype = file_info.get("mimetype", "application/octet-stream")
+    is_image = mimetype.startswith("image")
+    headers = HEADERS_BASE.copy()
+
+    # ---------- Si es imagen y hay dimensiones ----------
+    if is_image and (max_width or max_height):
+        ext = (file_info.get("name", "").split(".")[-1] or "jpg").lower()
+        cache_path = get_cache_path(content_id, max_width, max_height, ext)
+
+        # Si ya existe en cache → devolver directo
+        if os.path.exists(cache_path):
+            return StreamingResponse(open(cache_path, "rb"), media_type=mimetype)
+
+        # Si no existe → descargar, redimensionar y guardar
+        resp = requests.get(media_url, headers=headers, stream=True)
+        image = Image.open(io.BytesIO(resp.content))
+        orig_w, orig_h = image.size
+
+        # Redimensionar manteniendo proporción
+        image.thumbnail((max_width or orig_w, max_height or orig_h), Image.LANCZOS)
+
+        # Guardar en caché
+        image.save(cache_path, format=image.format or "JPEG")
+
+        return StreamingResponse(open(cache_path, "rb"), media_type=mimetype)
+
+    # ---------- Para video o imágenes sin resize ----------
+    resp = requests.get(media_url, headers=headers, stream=True)
+
+    def generate():
+        for chunk in resp.iter_content(8192):
+            yield chunk
+
+    return StreamingResponse(generate(), media_type=mimetype)
