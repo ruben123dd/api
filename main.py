@@ -45,6 +45,12 @@ def init_db():
             content_id TEXT NOT NULL UNIQUE
         )
     """)
+    # Ensure 'source' column exists to mark external sources (e.g. 'pixeldrain')
+    try:
+        db.execute("ALTER TABLE folders ADD COLUMN source TEXT DEFAULT 'gofile'")
+    except Exception:
+        # if column already exists or SQLite doesn't allow, ignore
+        pass
     db.commit()
     db.close()
 
@@ -64,6 +70,7 @@ class UserSchema(BaseModel):
 class FolderSchema(BaseModel):
     name: str
     content_id: str
+    source: str = 'gofile'
 
 # ---------------- JWT ----------------
 def create_jwt(user_id: int):
@@ -115,19 +122,104 @@ def list_folders(auth=Depends(auth_required)):
     db = get_db()
     folders = db.execute("SELECT * FROM folders").fetchall()
     db.close()
-    return [{"id": f["id"], "name": f["name"], "content_id": f["content_id"]} for f in folders]
+    return [{"id": f["id"], "name": f["name"], "content_id": f["content_id"], "source": f["source"] if "source" in f.keys() else "gofile"} for f in folders]
 
 @app.post("/folders")
 def add_folder(folder: FolderSchema, auth=Depends(auth_required)):
     db = get_db()
     try:
-        db.execute("INSERT INTO folders (name, content_id) VALUES (?, ?)", (folder.name, folder.content_id))
+        # include source (e.g. 'gofile' or 'pixeldrain')
+        db.execute("INSERT INTO folders (name, content_id, source) VALUES (?, ?, ?)", (folder.name, folder.content_id, folder.source))
         db.commit()
     except sqlite3.IntegrityError:
         raise HTTPException(status_code=400, detail="El content_id ya existe")
     finally:
         db.close()
     return {"message": "Folder registrado correctamente"}
+
+# ---------------- Pixeldrain support ----------------
+PIXELDRAIN_ROOT = "https://pixeldrain.com"
+
+
+def pixeldrain_get_json(path, params=None):
+    # try direct and /api/ prefixed paths if needed
+    url = PIXELDRAIN_ROOT + path
+    resp = requests.get(url, params=params)
+    if resp.status_code == 404 and path.startswith('/api/'):
+        # try without /api/
+        url2 = PIXELDRAIN_ROOT + path.replace('/api/', '/')
+        resp = requests.get(url2, params=params)
+    if resp.status_code != 200:
+        raise HTTPException(status_code=resp.status_code, detail=f"Pixeldrain error {resp.status_code}")
+    try:
+        return resp.json()
+    except Exception:
+        raise HTTPException(status_code=500, detail="Invalid JSON from pixeldrain")
+
+
+@app.get("/pixeldrain/resolve")
+def pixeldrain_resolve(content_id: str):
+    """Try to resolve a pixeldrain id: list or file. Returns {type: 'list'|'file', data: ...} """
+    # try list
+
+    # try list endpoints
+    try:
+        for p in (f"/api/list/{content_id}", f"/list/{content_id}"):
+            try:
+                data = pixeldrain_get_json(p)
+                if data and data.get('files'):
+                    return {"type": "list", "data": data}
+            except HTTPException:
+                continue
+    except Exception:
+        pass
+
+    # try file info endpoints
+    try:
+        for p in (f"/api/file/{content_id}/info", f"/file/{content_id}/info"):
+            try:
+                data = pixeldrain_get_json(p)
+                return {"type": "file", "data": data}
+            except HTTPException:
+                continue
+    except Exception:
+        pass
+
+    raise HTTPException(status_code=404, detail="Pixeldrain id not found")
+
+
+@app.get("/pixeldrain/info")
+def pixeldrain_info(file_id: str):
+    return pixeldrain_get_json(f"/api/file/{file_id}/info")
+
+
+@app.get("/pixeldrain/thumbnail")
+def pixeldrain_thumbnail(file_id: str, width: int = 128, height: int = 128):
+    # Stream the pixeldrain thumbnail
+    url = f"{PIXELDRAIN_ROOT}/file/{file_id}/thumbnail"
+    params = {"width": width, "height": height}
+    resp = requests.get(url, params=params, stream=True)
+    if resp.status_code in (301, 302) and resp.headers.get('location'):
+        # follow redirect
+        return StreamingResponse(requests.get(resp.headers['location'], stream=True).iter_content(8192), media_type="image/png")
+    if resp.status_code != 200:
+        raise HTTPException(status_code=resp.status_code, detail="Thumbnail not available")
+    return StreamingResponse(resp.iter_content(8192), media_type=resp.headers.get('Content-Type', 'image/png'))
+
+
+@app.get("/pixeldrain/file")
+def pixeldrain_file(file_id: str):
+    # Stream file content from pixeldrain (might be rate-limited)
+    url = f"{PIXELDRAIN_ROOT}/file/{file_id}"
+    resp = requests.get(url, stream=True)
+    if resp.status_code != 200:
+        raise HTTPException(status_code=resp.status_code, detail="File not available")
+
+    def generate():
+        for chunk in resp.iter_content(8192):
+            yield chunk
+
+    return StreamingResponse(generate(), media_type=resp.headers.get('Content-Type', 'application/octet-stream'))
 
 # ---------------- Contenido abierto ----------------
 def get_content_sync(content_id, content_filter="", page=1, page_size=1000, sort_field="createTime", sort_direction=-1, password=""):

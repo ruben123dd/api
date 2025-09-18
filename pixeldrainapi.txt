@@ -1,0 +1,175 @@
+1: GET /file/{id}
+Parameters:
+id required:true location:url
+download required:false location:url
+
+HTTP 200: OK
+
+Requested file data
+
+HTTP 404: Not Found
+
+{
+	"success": false,
+	"value": "not_found",
+	"message": "The entity you requested could not be found"
+}
+
+HTTP 403: Forbidden
+
+{
+	"success": false,
+	"value": "file_rate_limited_captcha_required",
+	"message": "This file is using too much bandwidth. For anonymous downloads a captcha is required now. The captcha entry is available on the download page"
+}
+
+HTTP 403: Forbidden
+
+{
+	"success": false,
+	"value": "virus_detected_captcha_required",
+	"message": "This file has been marked as malware by our scanning systems. To avoid infecting other systems through automated downloads we require you to enter a captcha. The captcha entry is available on the download page"
+}
+
+2: GET /file/{id}/info
+
+Parameters:
+id required:true location:url
+
+Returns
+HTTP 200: OK
+
+{
+	"id": "1234abcd",
+	"name": "screenshot.png",
+	// Size of the file in bytes
+	"size": 5694837,
+	// Number of unique file views, views are counted once per IP address
+	"views" 1234,
+	// Total bandwidth usage of the file
+	"bandwidth_used": 1234567890,
+	// Premium bandwidth usage, from users with a Pro subscription or bandwidth sharing
+	"bandwidth_used_paid": 1234567890,
+	// Unique downloads per IP address
+	"downloads": 1234,
+	"date_upload": 2020-02-04T18:34:05.706801Z,
+	"date_last_view": 2020-02-04T18:34:05.706801Z,
+	"mime_type" "image/png",
+	// Link to a thumbnail of this file
+	"thumbnail_href": "/file/1234abcd/thumbnail"
+	// SHA256 sum of the file, encoded in hexadecimal
+	"hash_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+	// If the current logged in user can edit the file
+	"can_edit": true,
+}
+
+HTTP 404: Not Found
+
+{
+	"success": false,
+	"value": "file_not_found"
+}
+
+3: GET /file/{id}/thumbnail
+Parameters:
+id required:true location:url
+width required:false location:url
+heuight required:false location:url
+
+HTTP 200
+
+IMAGE_FILE
+
+HTTP 301
+
+GENERIC_PLACEHOLDER_IMAGE_FILE
+
+HTTP 404: Not found
+
+{
+    "success": false,
+    "value": "not_found",
+    "message": "The entity you requested could not be found"
+}
+
+4: GET /list/{id}
+Parameters:
+id required:true location:url
+
+{
+	"success": true,
+	"id": "L8bhwx",
+	"title": "Rust in Peace",
+	"date_created": 2020-02-04T18:34:13.466276Z,
+	"files": [
+		// These structures are the same as the file info response, except for the detail_href and description fields
+		{
+			"detail_href": "/file/_SqVWi/info",
+			"description": "",
+			"success": true,
+			"id": "_SqVWi",
+			"name": "01 Holy Wars... The Punishment Due.mp3",
+			"size": 123456,
+			"date_created": 2020-02-04T18:34:13.466276Z,
+			"date_last_view": 2020-02-04T18:34:13.466276Z,
+			"mime_type": "audio/mp3",
+			"views": 1,
+			"bandwidth_used": 1234567890,
+			"thumbnail_href": "/file/_SqVWi/thumbnail"
+		},
+		{
+			"detail_href": "/file/RKwgZb/info",
+			"description": "",
+			"success": true,
+			"id": "RKwgZb",
+			"name": "02 Hangar 18.mp3",
+			"size": 123456,
+			"date_created": 2020-02-04T18:34:13.466276Z,
+			"date_last_view": 2020-02-04T18:34:13.466276Z,
+			"mime_type": "audio/mp3",
+			"views": 2,
+			"bandwidth_used": 1234567890,
+			"thumbnail_href": "/file/RKwgZb/thumbnail"
+		},
+		{
+			"detail_href": "/file/DRaL_e/info",
+			"description": "",
+			"success": true,
+			"id": "DRaL_e",
+			"name": "03 Take No Prisoners.mp3",
+			"size": 123456,
+			"date_created": 2020-02-04T18:34:13.466276Z,
+			"date_last_view": 2020-02-04T18:34:13.466276Z,
+			"mime_type": "audio/mp3",
+			"views": 3,
+			"bandwidth_used": 1234567890,
+			"thumbnail_href": "/file/DRaL_e/thumbnail"
+		}
+	]
+}
+
+HTTP 404: Not Found
+
+{
+	"success": false,
+	"value": "list_not_found",
+}
+
+1: Description
+Returns the full file associated with the ID. Supports byte range requests.
+
+When ‘?download’ is added to the URL the server will send an attachment header instead of inline rendering, which causes the browser to show a ‘Save File’ dialog.
+
+Warning: If a file is using too much bandwidth it can be rate limited. The rate limit will be enabled if a file has three times more downloads than views. The owner of a file can always download it. When a file is rate limited the user will need to fill out a captcha in order to continue downloading the file. The captcha will only appear on the file viewer page (pixeldrain.com/u/{id}). Rate limiting has been added to prevent the spread of viruses and to stop hotlinking. Hotlinking is only allowed when files are uploaded using a Pro account.
+
+Pixeldrain also includes a virus scanner. If a virus has been detected in a file the user will also have to fill in a captcha to download it.
+
+
+2: Description
+Returns information about one or more files. You can also put a comma separated list of file IDs in the URL and it will return an array of file info, instead of a single object. There’s a limit of 1000 files per request.
+
+3: Description
+Returns a PNG thumbnail image representing the file. The thumbnail image will be 128x128 px by default. You can specify the width and height with parameters in the URL. The width and height parameters need to be a multiple of 16. So the allowed values are 16, 32, 48, 64, 80, 96, 112 and 128. If a thumbnail cannot be generated for the file you will be redirected to a mime type image of 128x128 px.
+
+4:Description
+Returns information about a file list and the files in it.

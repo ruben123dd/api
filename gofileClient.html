@@ -13,12 +13,19 @@
   <link rel="stylesheet" href="modal.css">
   <style>
   body { font-family: 'Martian Mono', monospace; }
+  /* Modal navigation and media constraints */
+  .mm-viewer { position: relative; }
+  .mm-nav-btn { position: absolute; top: 33%; height: 34%; width: 44px; min-width:44px; background: rgba(0,0,0,0.35); border-radius:6px; border:none; color:#fff; }
+  .mm-nav-btn.prev { left: 8px; }
+  .mm-nav-btn.next { right: 8px; }
+  /* Videos inside the viewer should not exceed 50% of parent dimensions */
+  .mm-viewer video, .mm-viewer iframe { max-width:50%; max-height:50%; display:block; margin:0 auto; }
   /* Explorer styles */
   .folder-row { padding:10px; border-radius:8px; background: rgba(255,255,255,0.03); margin-bottom:8px; }
   .folder-row:hover { background: rgba(255,255,255,0.05); }
   .preview-thumb { width:80px; height:60px; object-fit:cover; border-radius:6px; margin-right:10px; background:#111; }
   .item-meta { font-size:12px; color:#ddd; }
-  .folder-list-flex { display:flex; align-items:center; gap:12px; }
+  .folder-list-flex { display:flex; align-items:center; gap:12px; overflow: hidden;}
   /* Register form styles */
   #folderName, #folderId { max-width: 320px; }
   #foldersList .list-group-item { display:flex; justify-content:space-between; align-items:center; gap:12px; }
@@ -62,6 +69,11 @@
 <div class="mb-3 d-flex gap-2">
   <input type="text" id="folderName" class="form-control" placeholder="Nombre del folder">
   <input type="text" id="folderId" class="form-control" placeholder="Content ID">
+  <select id="folderSource" class="form-select" style="max-width:160px;">
+    <option value="gofile">gofile</option>
+    <option value="pixeldrain">pixeldrain</option>
+  </select>
+  <button class="btn btn-secondary" onclick="fetchExternalMetadata()">Obtener metadata</button>
   <button class="btn btn-success" onclick="registerFolder()">Registrar</button>
 </div>
 
@@ -149,14 +161,14 @@ function addProxySizeParams(url){
   try{
     if(url.includes('/proxy?content_id=') || /proxy\?content_id=/i.test(url)){
       const u = new URL(url, window.location.origin);
-      u.searchParams.set('max_width', String(window.innerWidth || screen.width || 0));
-      u.searchParams.set('max_height', String(window.innerHeight || screen.height || 0));
+  u.searchParams.set('max_width', String(screen.width || window.innerWidth || 0));
+  u.searchParams.set('max_height', String(screen.height || window.innerHeight || 0));
       return u.toString();
     }
   }catch(e){
     // fallback: append manually if it contains proxy?content_id=
     if(/proxy\?content_id=/i.test(url)){
-      return url + (url.includes('?') ? '&' : '?') + 'max_width=' + (window.innerWidth||screen.width||0) + '&max_height=' + (window.innerHeight||screen.height||0);
+      return url + (url.includes('?') ? '&' : '?') + 'max_width=' + (screen.width||window.innerWidth||0) + '&max_height=' + (screen.height||window.innerHeight||0);
     }
   }
   return url;
@@ -344,17 +356,40 @@ function openModalFolder(itemOffset) {
 async function registerFolder() {
   const name = document.getElementById("folderName").value.trim();
   const content_id = document.getElementById("folderId").value.trim();
+  const source = document.getElementById("folderSource").value || 'gofile';
   if (!name || !content_id) return alert("Rellena ambos campos");
 
+  const payload = { name, content_id, source };
   const res = await authFetch("http://40.233.25.130:8000/folders", {
     method: "POST",
     headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({name, content_id})
+    body: JSON.stringify(payload)
   });
   const data = await res.json();
   if(!res.ok) { alert(data.detail || "Error"); return; }
   alert(data.message);
   loadFolders();
+}
+
+// If user selects pixeldrain and wants metadata, try to resolve via backend and prefill name
+async function fetchExternalMetadata(){
+  const content_id = document.getElementById("folderId").value.trim();
+  const source = document.getElementById("folderSource").value;
+  if(!content_id) return alert('Ingresa un ID primero');
+  if(source === 'pixeldrain'){
+    try{
+      const res = await fetch(`http://40.233.25.130:8000/pixeldrain/resolve?content_id=${encodeURIComponent(content_id)}`);
+      if(!res.ok) { const d = await res.json().catch(()=>({detail:'error'})); return alert(d.detail||'No encontrado'); }
+      const data = await res.json();
+      if(data.type === 'list'){
+        document.getElementById('folderName').value = data.data.title || ('pixeldrain list ' + content_id);
+      } else if(data.type === 'file'){
+        document.getElementById('folderName').value = data.data.name || ('pixeldrain file ' + content_id);
+      }
+    }catch(e){ console.error(e); alert('Error al obtener metadata'); }
+  } else {
+    alert('Solo soporte de metadata para pixeldrain por ahora');
+  }
 }
 
 async function loadFolders() {
@@ -370,13 +405,15 @@ async function loadFolders() {
     const left = document.createElement('div');
     left.className = 'd-flex align-items-center gap-2';
 
-    const thumb = document.createElement('img');
-    thumb.className = 'preview-thumb';
-    thumb.src = f.thumbnail || MM_PLACEHOLDER;
-    thumb.alt = f.name || 'folder';
+  const thumb = document.createElement('img');
+  thumb.className = 'preview-thumb';
+  thumb.src = f.thumbnail || MM_PLACEHOLDER;
+  thumb.alt = f.name || 'folder';
 
     const title = document.createElement('div');
-    title.innerHTML = `<a class="folder-link" href="#" onclick="onRegisteredFolderClick('${f.content_id}')">${f.name}</a><div class="folder-meta">${f.content_id}</div>`;
+  // include a marker for external sources
+  const badge = f.source && f.source !== 'gofile' ? (` <span class="badge bg-info text-dark">${f.source}</span>`) : '';
+  title.innerHTML = `<a class="folder-link" href="#" onclick="onRegisteredFolderClick('${f.content_id}', '${f.source || 'gofile'}')">${f.name}</a>${badge}<div class="folder-meta">${f.content_id}</div>`;
 
     left.appendChild(thumb);
     left.appendChild(title);
@@ -387,21 +424,48 @@ async function loadFolders() {
 }
 
 // When a registered folder is clicked: if it points to a file, show that file directly; otherwise open folder
-async function onRegisteredFolderClick(contentId){
+async function onRegisteredFolderClick(contentId, source='gofile'){
   try{
+    if(source === 'pixeldrain'){
+      // ask backend to resolve if this id is a list or file
+      const res = await fetch(`http://40.233.25.130:8000/pixeldrain/resolve?content_id=${encodeURIComponent(contentId)}`);
+      if(!res.ok) { const d = await res.json().catch(()=>({detail:'error'})); return alert(d.detail||'No encontrado'); }
+      const data = await res.json();
+      if(data.type === 'file'){
+        // build mm item using backend pixeldrain file proxy and thumbnail
+        const file = data.data;
+        const mmItem = {
+          title: file.name || file.id || file['name'] || file['id'] || contentId,
+          url: `http://40.233.25.130:8000/pixeldrain/file?file_id=${encodeURIComponent(contentId)}`,
+          type: file.mime_type || file.mimeType || file['mime_type'] || 'application/octet-stream',
+          size: file.size || file['size'] || 0,
+          thumbnail: `http://40.233.25.130:8000/pixeldrain/thumbnail?file_id=${encodeURIComponent(contentId)}&width=128&height=128`
+        };
+        // open modal
+        if(window.__MM_AUTH_HEADERS === undefined) window.__MM_AUTH_HEADERS = {};
+        if(token) window.__MM_AUTH_HEADERS[mmItem.url] = { Authorization: 'Bearer ' + token };
+        MM.openModalWithOptions([mmItem], { startIndex:0, carousel:'bottom', preload:1 });
+        return;
+      } else if(data.type === 'list'){
+        // show list contents in folder view by mapping pixeldrain files to currentItems
+        const files = data.data.files || data.data.files || [];
+        currentItems = files.map(f => ({ id: f.id || f['id'], name: f.name || f['name'], type: 'file', mimetype: f.mime_type || f['mime_type'] || 'application/octet-stream', size: f.size || f['size'] || 0, link: `http://40.233.25.130:8000/pixeldrain/file?file_id=${encodeURIComponent(f.id || f['id'])}`, thumbnail: `http://40.233.25.130:8000/pixeldrain/thumbnail?file_id=${encodeURIComponent(f.id || f['id'])}&width=240&height=160` }));
+        currentPage = 0;
+        renderPage();
+        return;
+      }
+    }
+
+    // default: treat as gofile content id
     const res = await authFetch(`http://40.233.25.130:8000/get_content?content_id=${encodeURIComponent(contentId)}`);
     if(res.status===401){ showLogin(); return; }
-    const data = await res.json();
+    let data = await res.json();
     const d = data.data;
     if(d.type === 'file'){
-      // show single file as the only item in the files section
       currentItems = [d];
       currentPage = 0;
       renderPage();
-      // open the modal directly to show the file
-      // build mm item
-  const mmItem = { title: d.name, url: addProxySizeParams(d.link), type: d.mimetype, size: d.size||0, thumbnail: d.thumbnail||d.link };
-      // ensure auth header mapping for url
+      const mmItem = { title: d.name, url: addProxySizeParams(d.link), type: d.mimetype, size: d.size||0, thumbnail: d.thumbnail||d.link };
       if(window.__MM_AUTH_HEADERS === undefined) window.__MM_AUTH_HEADERS = {};
       if(token) window.__MM_AUTH_HEADERS[mmItem.url] = { Authorization: 'Bearer ' + token };
       MM.openModalWithOptions([mmItem], { startIndex:0, carousel:'bottom', preload:1 });

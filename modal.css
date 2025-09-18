@@ -46,6 +46,13 @@ body { background:#222; color:#fff; font-family:sans-serif; }
   color:#fff;
   font-size:14px;
 }
+.mm-info{
+  max-width: 70%;
+  overflow: hidden;
+}
+.mm-buttons{
+  min-width: 30%;
+}
 .mm-topbar .mm-info .mm-title {
   font-weight:bold;
   font-size:16px;

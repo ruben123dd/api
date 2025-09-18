@@ -5,9 +5,9 @@ const MM = (function(){
   let totalCacheBytes = 0;
   console.log(totalCacheBytes)
   let cacheLimitMB = 500; // default cache limit in MB
-  let preloadCount = 2; // default number of images to preload in each direction
+  let preloadCount = 1; // default number of images to preload in each direction
   let _renderSeq = 0; // sequence counter to avoid race when rendering async
-  let basePreload = 10;
+  let basePreload = 2;
   let lastDirection = null; // 'next' or 'prev'
   let streakCount = 0;
   const maxStreak = 1; // cap how many extra preload levels
