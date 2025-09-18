@@ -257,34 +257,77 @@ def get_cache_path(content_id: str, max_width: int = None, max_height: int = Non
     return os.path.join(CACHE_DIR, f"{content_id}_{size_tag}.{ext}")
 
 @app.get("/proxy")
-def proxy_media(content_id: str, max_width: int = None, max_height: int = None):
+def proxy_media(content_id: str, max_width: int = None, max_height: int = None, mode: str = None):
     file_info = get_content_sync(content_id)["data"]
     media_url = file_info["link"]
     mimetype = file_info.get("mimetype", "application/octet-stream")
     is_image = mimetype.startswith("image")
     headers = HEADERS_BASE.copy()
 
-    # ---------- Si es imagen y hay dimensiones ----------
-    if is_image and (max_width or max_height):
-        ext = (file_info.get("name", "").split(".")[-1] or "jpg").lower()
-        cache_path = get_cache_path(content_id, max_width, max_height, ext)
+    # ---------- Si es imagen y hay dimensiones o modo ----------
+    # Preset resolutions (width, height)
+    PRESETS = {
+        'thumbnail': (480, 480),     # max 480 per side
+        'small': (1280, 720),        # HD
+        'medium': (1920, 1080),      # Full HD
+        'large': (2560, 1440),       # 2K
+        '4k': (3840, 2160),          # 4K (also considered for nearest-match)
+    }
 
-        # Si ya existe en cache → devolver directo
-        if os.path.exists(cache_path):
+    def choose_target_size(max_w, max_h, mode):
+        # If explicit mode requested
+        if mode:
+            m = mode.lower()
+            if m in ('original', 'orig'):
+                return None  # indicates original (no resize)
+            if m in PRESETS:
+                return PRESETS[m]
+        # If max requested, choose nearest preset by max dimension
+        if max_w or max_h:
+            requested = max(max_w or 0, max_h or 0)
+            # consider all presets including 4k
+            candidates = []
+            for k, (w,h) in PRESETS.items():
+                candidates.append((k, max(w,h)))
+            # find closest
+            candidates.sort(key=lambda c: abs(c[1] - requested))
+            best = candidates[0][0]
+            return PRESETS[best]
+        return None
+
+    if is_image:
+        # Determine target size (None means original
+        target = choose_target_size(max_width, max_height, mode)
+        # If target is None => serve original
+        if target is None:
+            # Fall through to streaming original below
+            pass
+        else:
+            target_w, target_h = target
+            # Enforce thumbnail bounds
+            if mode and mode.lower() == 'thumbnail':
+                target_w = min(target_w, 480)
+                target_h = min(target_h, 480)
+
+            ext = (file_info.get("name", "").split(".")[-1] or "jpg").lower()
+            cache_path = get_cache_path(content_id, target_w, target_h, ext)
+
+            # Si ya existe en cache → devolver directo
+            if os.path.exists(cache_path):
+                return StreamingResponse(open(cache_path, "rb"), media_type=mimetype)
+
+            # Si no existe → descargar, redimensionar y guardar
+            resp = requests.get(media_url, headers=headers, stream=True)
+            image = Image.open(io.BytesIO(resp.content))
+            orig_w, orig_h = image.size
+
+            # Redimensionar manteniendo proporción usando target box
+            image.thumbnail((target_w or orig_w, target_h or orig_h), Image.LANCZOS)
+
+            # Guardar en caché
+            image.save(cache_path, format=image.format or "JPEG")
+
             return StreamingResponse(open(cache_path, "rb"), media_type=mimetype)
-
-        # Si no existe → descargar, redimensionar y guardar
-        resp = requests.get(media_url, headers=headers, stream=True)
-        image = Image.open(io.BytesIO(resp.content))
-        orig_w, orig_h = image.size
-
-        # Redimensionar manteniendo proporción
-        image.thumbnail((max_width or orig_w, max_height or orig_h), Image.LANCZOS)
-
-        # Guardar en caché
-        image.save(cache_path, format=image.format or "JPEG")
-
-        return StreamingResponse(open(cache_path, "rb"), media_type=mimetype)
 
     # ---------- Para video o imágenes sin resize ----------
     resp = requests.get(media_url, headers=headers, stream=True)

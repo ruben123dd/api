@@ -58,6 +58,20 @@
   <button class="btn btn-primary" onclick="changeFolder()">Abrir Folder</button>
 </div>
 
+<!-- Global resolution controls -->
+<div class="mb-3 d-flex gap-2 align-items-center">
+  <div>Resolución proxy:</div>
+  <div id="resolutionControls" class="btn-group" role="group">
+    <button class="btn btn-outline-secondary" onclick="setGlobalMode('thumbnail')">Thumb</button>
+    <button class="btn btn-outline-secondary" onclick="setGlobalMode('small')">HD</button>
+    <button class="btn btn-outline-secondary" onclick="setGlobalMode('medium')">FHD</button>
+    <button class="btn btn-outline-secondary" onclick="setGlobalMode('large')">2K</button>
+    <button class="btn btn-outline-secondary" onclick="setGlobalMode('4k')">4K</button>
+    <button class="btn btn-outline-secondary" onclick="setGlobalMode('original')">Original</button>
+  </div>
+  <div id="globalModeLabel" style="min-width:120px; margin-left:8px; color:#ddd">Modo: original</div>
+</div>
+
 <div id="folderContent" class="mb-3"></div>
 
 <div class="mb-3 d-flex gap-2">
@@ -113,10 +127,40 @@ let currentFolderId = "6b89c061-1617-48ba-9284-ba7fc1280dcd";
 let currentPage = 0;
 const itemsPerPage = 5;
 let currentItems = [];
+// Global proxy mode (one of: thumbnail, small, medium, large, 4k, original/null)
+let globalMode = null;
+
+function setGlobalMode(mode){
+  globalMode = mode;
+  document.getElementById('globalModeLabel').innerText = 'Modo: ' + (mode || 'original');
+}
 
 // Blob pool to cache object URLs and avoid re-downloading images
 // Preallocated array with length itemsPerPage. Each slot: { ownerId, contentId, url }
 let blobPool = [];
+
+// Global image fetch queue to ensure images download one-by-one
+let imageFetchQueue = [];
+let imageFetchRunning = false;
+function enqueueImageFetch(task){
+  return new Promise((resolve,reject)=>{
+    imageFetchQueue.push({task, resolve, reject});
+    if(!imageFetchRunning) processImageQueue();
+  });
+}
+async function processImageQueue(){
+  imageFetchRunning = true;
+  while(imageFetchQueue.length){
+    const {task, resolve, reject} = imageFetchQueue.shift();
+    try{
+      const result = await task();
+      resolve(result);
+    }catch(e){
+      reject(e);
+    }
+  }
+  imageFetchRunning = false;
+}
 
 function initBlobPool(ownerId){
   // ownerId: folder id or file id that these blobs belong to
@@ -142,16 +186,34 @@ async function ensureBlobForSlot(slotIndex, content){
   }
     // if slot already has this content, return  
   if(slot.contentId === content.id && slot.url) return slot.url;
-  // otherwise fetch the blob and set
+  // if there's already a pending fetch for this slot, wait for it
+  if(slot.pendingPromise){
+    try{ await slot.pendingPromise; return slot.url; }catch(e){ /* fallthrough to try again */ }
+  }
+
+  // otherwise enqueue a fetch so downloads happen one-by-one
   try{
-      const fetchUrl = addProxySizeParams(content.link);
+    const fetchUrl = addProxySizeParams(content.link);
+    const fetchTask = async ()=>{
       const res = await authFetch(fetchUrl);
-    if(!res.ok) throw new Error('fetch failed');
-    const blob = await res.blob();
-    if(slot.url) { try{ URL.revokeObjectURL(slot.url); }catch(e){} }
-    slot.url = URL.createObjectURL(blob);
-    slot.contentId = content.id;
-    return slot.url;
+      if(!res.ok) throw new Error('fetch failed');
+      const blob = await res.blob();
+      return blob;
+    };
+
+    // mark pendingPromise so repeated calls for same slot wait for the same promise
+    slot.pendingPromise = enqueueImageFetch(fetchTask).then(blob => {
+      try{ if(slot.url) URL.revokeObjectURL(slot.url); }catch(e){}
+      slot.url = URL.createObjectURL(blob);
+      slot.contentId = content.id;
+      slot.pendingPromise = null;
+      return slot.url;
+    }).catch(err=>{
+      slot.pendingPromise = null;
+      throw err;
+    });
+
+    return await slot.pendingPromise;
   }catch(e){ console.error('blob fetch error', e); return null; }
 }
 
@@ -161,13 +223,19 @@ function addProxySizeParams(url){
   try{
     if(url.includes('/proxy?content_id=') || /proxy\?content_id=/i.test(url)){
       const u = new URL(url, window.location.origin);
-  u.searchParams.set('max_width', String(screen.width || window.innerWidth || 0));
-  u.searchParams.set('max_height', String(screen.height || window.innerHeight || 0));
+      // prefer explicit globalMode if set, otherwise default to screen size
+  if(globalMode){
+    u.searchParams.set('mode', String(globalMode));
+  } else {
+    u.searchParams.set('max_width', String(screen.width || window.innerWidth || 0));
+    u.searchParams.set('max_height', String(screen.height || window.innerHeight || 0));
+  }
       return u.toString();
     }
   }catch(e){
     // fallback: append manually if it contains proxy?content_id=
     if(/proxy\?content_id=/i.test(url)){
+      if(globalMode) return url + (url.includes('?') ? '&' : '?') + 'mode=' + encodeURIComponent(globalMode);
       return url + (url.includes('?') ? '&' : '?') + 'max_width=' + (screen.width||window.innerWidth||0) + '&max_height=' + (screen.height||window.innerHeight||0);
     }
   }
