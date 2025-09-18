@@ -371,22 +371,33 @@ async function registerFolder() {
   loadFolders();
 }
 
-// If user selects pixeldrain and wants metadata, try to resolve via backend and prefill name
+// If user selects pixeldrain and wants metadata, query pixeldrain directly and prefill name
 async function fetchExternalMetadata(){
   const content_id = document.getElementById("folderId").value.trim();
   const source = document.getElementById("folderSource").value;
   if(!content_id) return alert('Ingresa un ID primero');
   if(source === 'pixeldrain'){
     try{
-      const res = await fetch(`http://40.233.25.130:8000/pixeldrain/resolve?content_id=${encodeURIComponent(content_id)}`);
-      if(!res.ok) { const d = await res.json().catch(()=>({detail:'error'})); return alert(d.detail||'No encontrado'); }
-      const data = await res.json();
-      if(data.type === 'list'){
-        document.getElementById('folderName').value = data.data.title || ('pixeldrain list ' + content_id);
-      } else if(data.type === 'file'){
-        document.getElementById('folderName').value = data.data.name || ('pixeldrain file ' + content_id);
+      // Try list endpoints first, then file info
+      let res = await fetch(`https://pixeldrain.com/api/list/${encodeURIComponent(content_id)}`);
+      if(!res.ok) res = await fetch(`https://pixeldrain.com/api/list/${encodeURIComponent(content_id)}`);
+      if(res.ok){
+        const data = await res.json();
+        document.getElementById('folderName').value = data.title || ('pixeldrain list ' + content_id);
+        return;
       }
-    }catch(e){ console.error(e); alert('Error al obtener metadata'); }
+
+      // Try file info
+      res = await fetch(`https://pixeldrain.com/api/file/${encodeURIComponent(content_id)}/info`);
+      if(!res.ok) res = await fetch(`https://pixeldrain.com/api/file/${encodeURIComponent(content_id)}/info`);
+      if(res.ok){
+        const data = await res.json();
+        document.getElementById('folderName').value = data.name || ('pixeldrain file ' + content_id);
+        return;
+      }
+
+      alert('No se encontró metadata en pixeldrain');
+    }catch(e){ console.error(e); alert('Error al obtener metadata de pixeldrain'); }
   } else {
     alert('Solo soporte de metadata para pixeldrain por ahora');
   }
@@ -427,33 +438,38 @@ async function loadFolders() {
 async function onRegisteredFolderClick(contentId, source='gofile'){
   try{
     if(source === 'pixeldrain'){
-      // ask backend to resolve if this id is a list or file
-      const res = await fetch(`http://40.233.25.130:8000/pixeldrain/resolve?content_id=${encodeURIComponent(contentId)}`);
-      if(!res.ok) { const d = await res.json().catch(()=>({detail:'error'})); return alert(d.detail||'No encontrado'); }
-      const data = await res.json();
-      if(data.type === 'file'){
-        // build mm item using backend pixeldrain file proxy and thumbnail
-        const file = data.data;
-        const mmItem = {
-          title: file.name || file.id || file['name'] || file['id'] || contentId,
-          url: `http://40.233.25.130:8000/pixeldrain/file?file_id=${encodeURIComponent(contentId)}`,
-          type: file.mime_type || file.mimeType || file['mime_type'] || 'application/octet-stream',
-          size: file.size || file['size'] || 0,
-          thumbnail: `http://40.233.25.130:8000/pixeldrain/thumbnail?file_id=${encodeURIComponent(contentId)}&width=128&height=128`
-        };
-        // open modal
-        if(window.__MM_AUTH_HEADERS === undefined) window.__MM_AUTH_HEADERS = {};
-        if(token) window.__MM_AUTH_HEADERS[mmItem.url] = { Authorization: 'Bearer ' + token };
-        MM.openModalWithOptions([mmItem], { startIndex:0, carousel:'bottom', preload:1 });
+      // resolve using pixeldrain public API directly
+      try{
+        // Try list endpoints
+        let res = await fetch(`https://pixeldrain.com/api/list/${encodeURIComponent(contentId)}`);
+        if(!res.ok) res = await fetch(`https://pixeldrain.com/api/list/${encodeURIComponent(contentId)}`);
+        if(res.ok){
+          const data = await res.json();
+          const files = data.files || [];
+          currentItems = files.map(f => ({ id: f.id || f['id'], name: f.name || f['name'], type: 'file', mimetype: f.mime_type || f['mime_type'] || 'application/octet-stream', size: f.size || f['size'] || 0, link: `https://pixeldrain.com/api/file/${encodeURIComponent(f.id || f['id'])}`, thumbnail: `https://pixeldrain.com/api/file/${encodeURIComponent(f.id || f['id'])}/thumbnail?width=240&height=160` }));
+          currentPage = 0; renderPage(); return;
+        }
+
+        // Try file info endpoints
+        res = await fetch(`https://pixeldrain.com/api/file/${encodeURIComponent(contentId)}/info`);
+        if(!res.ok) res = await fetch(`https://pixeldrain.com/api/file/${encodeURIComponent(contentId)}/info`);
+        if(res.ok){
+          const file = await res.json();
+          // open modal directly using pixeldrain URLs (no backend proxy)
+          const mmItem = {
+            title: file.name || contentId,
+            url: `https://pixeldrain.com/api/file/${encodeURIComponent(contentId)}`,
+            type: file.mime_type || 'application/octet-stream',
+            size: file.size || 0,
+            thumbnail: `https://pixeldrain.com/api/file/${encodeURIComponent(contentId)}/thumbnail?width=128&height=128`
+          };
+          MM.openModalWithOptions([mmItem], { startIndex:0, carousel:'bottom', preload:1 });
+          return;
+        }
+
+        alert('No se encontró el recurso en pixeldrain');
         return;
-      } else if(data.type === 'list'){
-        // show list contents in folder view by mapping pixeldrain files to currentItems
-        const files = data.data.files || data.data.files || [];
-        currentItems = files.map(f => ({ id: f.id || f['id'], name: f.name || f['name'], type: 'file', mimetype: f.mime_type || f['mime_type'] || 'application/octet-stream', size: f.size || f['size'] || 0, link: `http://40.233.25.130:8000/pixeldrain/file?file_id=${encodeURIComponent(f.id || f['id'])}`, thumbnail: `http://40.233.25.130:8000/pixeldrain/thumbnail?file_id=${encodeURIComponent(f.id || f['id'])}&width=240&height=160` }));
-        currentPage = 0;
-        renderPage();
-        return;
-      }
+      }catch(e){ console.error('pixeldrain frontend resolve error', e); alert('Error al resolver pixeldrain'); return; }
     }
 
     // default: treat as gofile content id
