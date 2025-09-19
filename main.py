@@ -209,7 +209,7 @@ def pixeldrain_thumbnail(file_id: str, width: int = 128, height: int = 128):
 
 @app.get("/pixeldrain/file")
 def pixeldrain_file(file_id: str):
-    # Stream file content from pixeldrain (might be rate-limited)
+    # Stream file content from pixeldrain directly; pixeldrain serves ranges itself if needed
     url = f"{PIXELDRAIN_ROOT}/file/{file_id}"
     resp = requests.get(url, stream=True)
     if resp.status_code != 200:
@@ -257,7 +257,7 @@ def get_cache_path(content_id: str, max_width: int = None, max_height: int = Non
     return os.path.join(CACHE_DIR, f"{content_id}_{size_tag}.{ext}")
 
 @app.get("/proxy")
-def proxy_media(content_id: str, max_width: int = None, max_height: int = None, mode: str = None):
+def proxy_media(content_id: str, max_width: int = None, max_height: int = None, mode: str = None, request: Request = None):
     file_info = get_content_sync(content_id)["data"]
     media_url = file_info["link"]
     mimetype = file_info.get("mimetype", "application/octet-stream")
@@ -330,6 +330,45 @@ def proxy_media(content_id: str, max_width: int = None, max_height: int = None, 
             return StreamingResponse(open(cache_path, "rb"), media_type=mimetype)
 
     # ---------- Para video o imágenes sin resize ----------
+    # If this is a video, forward Range and propagate partial responses
+    if mimetype.startswith('video'):
+        # Forward Range header (or request from start) to upstream
+        range_header = None
+        if request is not None:
+            range_header = request.headers.get('range')
+        upstream_headers = headers.copy()
+        if range_header:
+            upstream_headers['Range'] = range_header
+        else:
+            upstream_headers['Range'] = 'bytes=0-'
+
+        resp = requests.get(media_url, headers=upstream_headers, stream=True)
+        if resp.status_code not in (200, 206):
+            raise HTTPException(status_code=resp.status_code, detail="File not available")
+
+        out_headers = {}
+        if 'content-range' in resp.headers:
+            out_headers['Content-Range'] = resp.headers['content-range']
+        if 'content-length' in resp.headers:
+            out_headers['Content-Length'] = resp.headers['content-length']
+        out_headers['Accept-Ranges'] = resp.headers.get('accept-ranges', 'bytes')
+        content_type = resp.headers.get('Content-Type', resp.headers.get('content-type', 'application/octet-stream'))
+
+        def generate():
+            try:
+                for chunk in resp.iter_content(8192):
+                    if not chunk:
+                        continue
+                    yield chunk
+            finally:
+                try:
+                    resp.close()
+                except Exception:
+                    pass
+
+        return StreamingResponse(generate(), status_code=resp.status_code, headers=out_headers, media_type=content_type)
+
+    # fallback: stream upstream content for non-image, non-video
     resp = requests.get(media_url, headers=headers, stream=True)
 
     def generate():
